@@ -48,7 +48,7 @@ class NameServerManager:
 
     @staticmethod
     def get_ns_proxy():
-        """(0,3) Tenta obter uma referência do Name Server."""
+        """Tenta obter uma referência do Name Server."""
         try:
             ns = Pyro5.api.locate_ns(host=NS_HOST, port=NS_PORT) 
             print("Referência do Name Server obtida (já estava em execução).")
