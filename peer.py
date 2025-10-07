@@ -11,6 +11,8 @@ PEER_NAMES = ["PeerA", "PeerB", "PeerC", "PeerD"]
 
 COMMTIMEOUT = 10.0      
 TIMEOUT_RESPOSTA = 12
+TIMEOUT_HEARTBEAT = 7
+HEARTBEAT_INTERVAL = 2 
 
 class PeerState(Enum):
     RELEASED = 1 
@@ -76,7 +78,7 @@ class Peer:
         self.deferred_requests = []         
         self.reply_count = 0                
         self.lock = threading.RLock()       
-        
+        self.last_contact = {p: time.time() for p in self.all_peer_names}
         self.active_peers = set(self.all_peer_names) 
         self.host = socket.gethostname()
         self.daemon = Pyro5.api.Daemon(host=self.host) 
@@ -84,7 +86,7 @@ class Peer:
         
         self.stop_event = threading.Event()
 
-    def release_acess(self):
+    def release_access(self):
         """Método chamado pelo usuário (comando 2) para liberar a SC manualmente."""
         with self.lock:
             if self.state == PeerState.HELD:
@@ -92,6 +94,55 @@ class Peer:
             else:
                 print(f"\n[{self.name}] Não está na SC. Liberação ignorada.")
     
+    @Pyro5.api.oneway
+    def heartbeat(self, peer_name):
+        """Recebe Heartbeat e atualiza o tempo de vida."""
+        with self.lock:
+            # Não faz nada além de atualizar o tempo de contato
+            self.last_contact[peer_name] = time.time()
+            # Se o peer foi removido, re-adicione ele (re-detecção)
+            if peer_name not in self.active_peers:
+                self.active_peers.add(peer_name)
+                print(f"[{self.name}] Peer {peer_name} re-detectado como ativo via Heartbeat.")
+
+    def _heartbeat_sender(self):
+        """Envia Heartbeat periodicamente para peers ativos."""
+        while not self.stop_event.is_set():
+            time.sleep(HEARTBEAT_INTERVAL)
+            
+            # Percorre todos os peers ativos e envia a mensagem
+            for peer_name in self.all_peer_names: # Envia para todos na lista original
+                # Heartbeat é enviado APENAS para provar que este peer está vivo.
+                threading.Thread(
+                    target=self._send_heartbeat_thread,
+                    args=(peer_name, self.name, self),
+                    daemon=True
+                ).start()
+
+    def _send_heartbeat_thread(self, proxy_peer_name, self_peer_name, self_peer):
+        """Cria o proxy e envia o heartbeat oneway."""
+        try:
+            proxy = self_peer._get_peer_proxy_by_name(proxy_peer_name)
+            if proxy:
+                # Chamada oneway (não bloqueia, não espera resposta)
+                proxy.heartbeat(self_peer_name)
+        except Exception:
+            # Falhas aqui são ignoradas, pois o detector lidará com a inatividade.
+            pass
+
+    def _failure_detector(self):
+        """Verifica se algum peer ativo falhou baseado no timeout do Heartbeat."""
+        while not self.stop_event.is_set():
+            time.sleep(HEARTBEAT_INTERVAL * 2) # Checa a cada 4 segundos (2 * 2s)
+            
+            with self.lock:
+                peers_to_check = list(self.active_peers)
+            
+            for peer_name in peers_to_check:
+                if time.time() - self.last_contact.get(peer_name, 0) > TIMEOUT_HEARTBEAT:
+                    # Se o tempo limite expirou, o peer é considerado falho
+                    self._remove_failed_peer(peer_name)
+
     def get_uri(self):
         return self.uri
 
@@ -99,6 +150,12 @@ class Peer:
         print(f"{self.name}: Iniciando ({self.uri})...")
         self.daemon_thread = threading.Thread(target=self.daemon.requestLoop, daemon=True)
         self.daemon_thread.start()
+
+        self.heartbeat_sender_thread = threading.Thread(target=self._heartbeat_sender, daemon=True)
+        self.heartbeat_sender_thread.start()
+
+        self.failure_detector_thread = threading.Thread(target=self._failure_detector, daemon=True)
+        self.failure_detector_thread.start()
 
     def stop(self):
         self.stop_event.set()
@@ -305,7 +362,7 @@ def main():
             if mode == '1':
                 peer.request_access(duration=10)
             elif mode == '2':
-                peer.release_acess()
+                peer.release_access()
             elif mode == '3':
                 peer.print_active_peers()
             elif mode == '4':
