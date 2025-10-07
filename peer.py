@@ -5,24 +5,20 @@ import time
 from enum import Enum
 import socket
 import sys
-# Importe o NameServerManager do arquivo name_server_manager.py
 from name_server import NameServerManager 
 
 PEER_NAMES = ["PeerA", "PeerB", "PeerC", "PeerD"]
 
-# Configurações do Algoritmo e PyRO
+# Configurações
 COMMTIMEOUT = 10.0      
-TIMEOUT_RESPOSTA = 12   # Tempo limite total para esperar por todos os REPLYs.
-TIMEOUT_HEARTBEAT = 7   # Tempo limite (em segundos) para considerar um peer falho
+TIMEOUT_RESPOSTA = 40   # Tempo limite total para esperar por todos os REPLYs.
+TIMEOUT_HEARTBEAT = 7   # Tempo limite para considerar um peer falho
 HEARTBEAT_INTERVAL = 2  # Intervalo de envio do heartbeat
 
-# Estados de Ricart e Agrawala
 class PeerState(Enum):
     RELEASED = 1
     WANTED = 2    
     HELD = 3      
-
-# --- Funções Auxiliares de Threading ---
 
 def _send_reply_thread(proxy_peer_name, self_peer_name, self_peer):
     """Envia o REPLY de forma assíncrona, criando o proxy na thread."""
@@ -40,13 +36,13 @@ def _send_request_thread(requester_name, requester_timestamp, proxy_peer_name, r
     if not proxy:
         return requesting_peer._remove_failed_peer(proxy_peer_name) 
     
-    try:
-        proxy.handle_request(requester_name, requester_timestamp)
+    #try:
+    proxy.handle_request(requester_name, requester_timestamp)
         
-    except Pyro5.errors.TimeoutError:
-        requesting_peer._remove_failed_peer(proxy_peer_name)
-    except (Pyro5.errors.CommunicationError, Pyro5.errors.NamingError, Exception) as e:
-        requesting_peer._remove_failed_peer(proxy_peer_name)
+    #except Pyro5.errors.TimeoutError:
+        #requesting_peer._remove_failed_peer(proxy_peer_name)
+    #except (Pyro5.errors.CommunicationError, Pyro5.errors.NamingError, Exception) as e:
+        #requesting_peer._remove_failed_peer(proxy_peer_name)
 
 def _send_heartbeat_thread(proxy_peer_name, self_peer_name, self_peer):
     """Cria o proxy e envia o heartbeat oneway."""
@@ -60,7 +56,7 @@ def _send_heartbeat_thread(proxy_peer_name, self_peer_name, self_peer):
 def _wait_and_enter_thread(self_peer, duration):
     """Executa a lógica de espera por permissões e entrada/saída da SC."""
     
-    # 1. Lógica de espera por permissões
+    # Espera por permissões
     start_time = time.time()
     while time.time() - start_time < TIMEOUT_RESPOSTA:
         if self_peer.stop_event.is_set(): return
@@ -70,7 +66,7 @@ def _wait_and_enter_thread(self_peer, duration):
                 break
         time.sleep(0.1)
 
-    # 2. Verifica o resultado da espera
+    # Verifica o resultado da espera
     with self_peer.lock:
         active_count = len(self_peer.active_peers) + 1
         
@@ -127,8 +123,6 @@ def setup_peer(peer_names, name):
     peer.start()
     return peer
 
-# --- Classe Principal Peer ---
-
 @Pyro5.api.expose
 class Peer:
     def __init__(self, name, all_peer_names):
@@ -153,16 +147,14 @@ class Peer:
         
         self.stop_event = threading.Event()
 
-    # --- Heartbeat e Detecção de Falhas ---
-
     @Pyro5.api.oneway
     def heartbeat(self, peer_name):
         """Recebe Heartbeat e atualiza o tempo de vida."""
-        with self.lock:
-            self.last_contact[peer_name] = time.time()
-            if peer_name not in self.active_peers:
-                self.active_peers.add(peer_name)
-                print(f"\n[{self.name}] Peer {peer_name} re-detectado como ativo via Heartbeat.")
+
+        self.last_contact[peer_name] = time.time()
+        if peer_name not in self.active_peers:
+            self.active_peers.add(peer_name)
+            print(f"\n[{self.name}] Peer {peer_name} re-detectado como ativo via Heartbeat.")
 
     def _heartbeat_sender(self):
         """Envia Heartbeat periodicamente para todos os peers."""
@@ -187,8 +179,6 @@ class Peer:
             for peer_name in peers_to_check:
                 if time.time() - self.last_contact.get(peer_name, 0) > TIMEOUT_HEARTBEAT:
                     self._remove_failed_peer(peer_name)
-
-    # --- Métodos de Setup e Controle ---
 
     def release_access(self):
         """Método chamado pelo usuário (comando 2) para liberar a SC manualmente."""
@@ -236,8 +226,6 @@ class Peer:
                 print("Nenhum outro peer ativo detectado.")
         print("--------------------")
 
-    # --- Lógica de Exclusão Mútua (Implementa Ricart e Agrawala) ---
-
     def _get_peer_proxy_by_name(self, peer_name):
         """Obtém o proxy de um peer pelo Name Server (chamado por uma thread)."""
         try:
@@ -284,19 +272,12 @@ class Peer:
         with self.lock:
             peers_to_wait = list(self.active_peers)
 
-        if not peers_to_wait:
-            # Único peer: entra na SC imediatamente
-            threading.Thread(target=_wait_and_enter_thread, args=(self, duration), daemon=True).start()
-            return True
+        #if not peers_to_wait:
+            #threading.Thread(target=_wait_and_enter_thread, args=(self, duration), daemon=True).start()
+           # return True
 
-        # 1. Inicia a thread que irá ESPERAR e ENTRAR na SC.
-        threading.Thread(
-            target=_wait_and_enter_thread,
-            args=(self, duration),
-            daemon=True
-        ).start()
+        threading.Thread(target=_wait_and_enter_thread, args=(self, duration), daemon=True).start()
 
-        # 2. Dispara o envio de REQUESTs
         for peer_name in peers_to_wait:
             threading.Thread(
                 target=_send_request_thread,
@@ -341,7 +322,7 @@ class Peer:
         return True 
 
     def _send_reply(self, peer_name):
-        """Envia um REPLY (permissão) para o peer, em uma thread separada (unicast)."""
+        """Envia um REPLY para o peer, em uma thread separada."""
         
         if peer_name not in self.active_peers:
             return
@@ -354,14 +335,14 @@ class Peer:
     
     @Pyro5.api.oneway
     def receive_reply(self, sender_name):
-        """Recebe REPLY (imediato ou adiado) de um peer."""
+        """Recebe REPLY de um peer."""
         with self.lock:
             if self.state == PeerState.WANTED:
                 self.reply_count += 1
                 print(f"{self.name}: Recebeu REPLY de {sender_name}. Contagem: {self.reply_count}")
 
     def _enter_critical_section(self, duration):
-        """Entra na Seção Crítica (SC) e espera APENAS pelo timeout ou comando manual."""
+        """Entra na SC e espera pelo timeout ou comando manual."""
         
         with self.lock:
             self.state = PeerState.HELD
@@ -385,11 +366,11 @@ class Peer:
             self._exit_critical_section()
 
     def _exit_critical_section(self):
-        """Sai da Seção Crítica (SC) e envia REPLYs adiados."""
+        """Sai da SC e envia REPLYs adiados."""
         
         self.releasing_access = False 
         
-        print(f"{self.name}: <- SAIU da SC. Enviando REPLYs adiados ({len(self.deferred_requests)}).")
+        print(f"{self.name}: <- SAIU da SC. Enviando REPLYs adiados")
         
         deferred_list = []
         with self.lock:
@@ -401,8 +382,6 @@ class Peer:
         for _, requester_name in deferred_list: 
             self._send_reply(requester_name)
 
-
-# --- Função Main para o Terminal Interativo ---
 
 def main():
     
@@ -416,11 +395,9 @@ def main():
         peer = setup_peer(PEER_NAMES, name)
         print(f"\nPeer {name} pronto para interagir. Status: RELEASED")
 
-        # 1. Inicia a thread que CUIDA DA INTERAÇÃO DO USUÁRIO
         input_thread = threading.Thread(target=_input_thread, args=(peer,), daemon=True)
         input_thread.start()
         
-        # 2. A THREAD PRINCIPAL entra no loop de escuta do Daemon
         peer.run_daemon_loop() 
 
     except Exception as e:
