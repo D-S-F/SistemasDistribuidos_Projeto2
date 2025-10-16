@@ -380,7 +380,7 @@ class Peer:
             self.deferred_requests.clear()
         
         for _, requester_name in deferred_list: 
-            self._send_reply(requester_name)
+            self._send_reply(requester_name, True)
 
 
 def main():
