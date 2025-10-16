@@ -11,7 +11,6 @@ PEER_NAMES = ["PeerA", "PeerB", "PeerC", "PeerD"]
 
 # Configurações
 COMMTIMEOUT = 10.0      
-TIMEOUT_RESPOSTA = 40   # Tempo limite total para esperar por todos os REPLYs.
 TIMEOUT_HEARTBEAT = 7   # Tempo limite para considerar um peer falho
 HEARTBEAT_INTERVAL = 2  # Intervalo de envio do heartbeat
 
@@ -20,12 +19,12 @@ class PeerState(Enum):
     WANTED = 2    
     HELD = 3      
 
-def _send_reply_thread(proxy_peer_name, self_peer_name, self_peer):
+def _send_reply_thread(proxy_peer_name, self_peer_name, self_peer, permission):
     """Envia o REPLY de forma assíncrona, criando o proxy na thread."""
     try:
         proxy = self_peer._get_peer_proxy_by_name(proxy_peer_name) 
         if proxy:
-            proxy.receive_reply(self_peer_name)
+            proxy.receive_reply(self_peer_name, permission)
     except (Pyro5.errors.CommunicationError, Exception) as e:
         pass
 
@@ -36,13 +35,13 @@ def _send_request_thread(requester_name, requester_timestamp, proxy_peer_name, r
     if not proxy:
         return requesting_peer._remove_failed_peer(proxy_peer_name) 
     
-    #try:
-    proxy.handle_request(requester_name, requester_timestamp)
+    try:
+        proxy.handle_request(requester_name, requester_timestamp)
         
-    #except Pyro5.errors.TimeoutError:
-        #requesting_peer._remove_failed_peer(proxy_peer_name)
-    #except (Pyro5.errors.CommunicationError, Pyro5.errors.NamingError, Exception) as e:
-        #requesting_peer._remove_failed_peer(proxy_peer_name)
+    except Pyro5.errors.TimeoutError:
+        requesting_peer._remove_failed_peer(proxy_peer_name)
+    except (Pyro5.errors.CommunicationError, Pyro5.errors.NamingError, Exception) as e:
+        requesting_peer._remove_failed_peer(proxy_peer_name)
 
 def _send_heartbeat_thread(proxy_peer_name, self_peer_name, self_peer):
     """Cria o proxy e envia o heartbeat oneway."""
@@ -57,8 +56,8 @@ def _wait_and_enter_thread(self_peer, duration):
     """Executa a lógica de espera por permissões e entrada/saída da SC."""
     
     # Espera por permissões
-    start_time = time.time()
-    while time.time() - start_time < TIMEOUT_RESPOSTA:
+    #start_time = time.time()
+    while True:
         if self_peer.stop_event.is_set(): return
         with self_peer.lock:
             active_count = len(self_peer.active_peers) + 1 
@@ -312,16 +311,17 @@ class Peer:
                 reply_immediately = True
 
             if not reply_immediately:
+                self._send_reply(requester_name, False)
                 self.deferred_requests.append((requester_timestamp, requester_name))
                 self.deferred_requests.sort() 
                 print(f"{self.name}: REQ de {requester_name} adiado. Fila: {len(self.deferred_requests)}")
             
         if reply_immediately:
-            self._send_reply(requester_name)
+            self._send_reply(requester_name, True)
         
         return True 
 
-    def _send_reply(self, peer_name):
+    def _send_reply(self, peer_name, permission):
         """Envia um REPLY para o peer, em uma thread separada."""
         
         if peer_name not in self.active_peers:
@@ -329,15 +329,15 @@ class Peer:
 
         threading.Thread(
             target=_send_reply_thread, 
-            args=(peer_name, self.name, self), 
+            args=(peer_name, self.name, self, permission), 
             daemon=True
         ).start()
     
     @Pyro5.api.oneway
-    def receive_reply(self, sender_name):
+    def receive_reply(self, sender_name, permission):
         """Recebe REPLY de um peer."""
         with self.lock:
-            if self.state == PeerState.WANTED:
+            if self.state == PeerState.WANTED and permission == True:
                 self.reply_count += 1
                 print(f"{self.name}: Recebeu REPLY de {sender_name}. Contagem: {self.reply_count}")
 
